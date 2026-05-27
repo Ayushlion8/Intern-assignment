@@ -17,6 +17,12 @@ build/
 !package.json
 !tsconfig.json
 
+# API key storage
+api_keys.json
+
 # OS artifacts
 .DS_Store
 Thumbs.db
+
+# Docker
+.docker/
