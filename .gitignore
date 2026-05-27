@@ -10,4 +10,13 @@ venv/
 *.egg-info/
 dist/
 build/
-long-memory-481406-i3-a87ef482f961.json
+
+# Secrets — never commit
+.env
+*.json
+!package.json
+!tsconfig.json
+
+# OS artifacts
+.DS_Store
+Thumbs.db
