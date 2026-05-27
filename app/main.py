@@ -30,6 +30,7 @@ from app.errors import (
     quota_exceeded, rate_limited, unsupported_media_type,
 )
 from app.jobs import JobStatus, QuotaExceededError, job_manager
+from schemas import DiarizedSegment, TranscriptionResult
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -126,8 +127,19 @@ class JobResponse(BaseModel):
     status: JobStatus = Field(description="Current job status: queued | processing | completed | failed")
     created_at: float = Field(description="Job creation timestamp (Unix epoch)")
     completed_at: float | None = Field(None, description="Job completion timestamp")
-    result: dict | None = Field(None, description="TranscriptionResult (present when status=completed)")
-    error: dict | None = Field(None, description="Error details (present when status=failed)")
+    result: dict | None = Field(
+        None,
+        description=(
+            "Full TranscriptionResult (present when status=completed). "
+            "Contains: text, diarizedTranscript (list of DiarizedSegment), "
+            "audioMode, detectedLanguage, detectedLanguageName, languagesUsed, "
+            "languagesUsedNames, isTranslated"
+        ),
+    )
+    error: dict | None = Field(
+        None,
+        description="Error details with code, message, and suggested action (present when status=failed)",
+    )
 
 
 class JobSubmitResponse(BaseModel):
@@ -523,3 +535,173 @@ def _suffix_from_mime(mime: str) -> str:
         "audio/webm": ".webm",
     }
     return mapping.get(mime, ".mp4")
+
+
+# ---------------------------------------------------------------------------
+# Enriched OpenAPI schema — adds TranscriptionResult schema + examples
+# ---------------------------------------------------------------------------
+
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+        servers=app.servers,
+    )
+
+    # Add TranscriptionResult and DiarizedSegment schemas so agents
+    # can understand the job result structure
+    components = schema.setdefault("components", {})
+    schemas_dict = components.setdefault("schemas", {})
+
+    schemas_dict["DiarizedSegment"] = {
+        "type": "object",
+        "description": "A single speaker-labeled transcript segment",
+        "properties": {
+            "speaker": {
+                "type": "string",
+                "description": "Speaker label: creator | ai | narrator | on-screen-ocr | person1..personN | other",
+                "example": "creator",
+            },
+            "text": {
+                "type": "string",
+                "description": "English translation of the segment",
+                "example": "Hello everyone, welcome back!",
+            },
+            "originalText": {
+                "type": "string",
+                "description": "Untranslated transcript in the original language",
+                "example": "Hello everyone, welcome back!",
+            },
+            "language": {
+                "type": "string",
+                "description": "ISO 639-1 language code",
+                "example": "en",
+            },
+            "languageName": {
+                "type": "string",
+                "description": "Human-readable language name",
+                "example": "English",
+            },
+        },
+        "required": ["speaker", "text", "originalText", "language", "languageName"],
+    }
+
+    schemas_dict["TranscriptionResult"] = {
+        "type": "object",
+        "description": "Full transcription result with diarized segments, language info, and audio classification",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Full English transcript concatenated from all segments",
+                "example": "Hello everyone, welcome back! Today we're learning Korean.",
+            },
+            "diarizedTranscript": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/DiarizedSegment"},
+                "description": "Speaker-labeled segments with per-segment language and translation",
+            },
+            "audioMode": {
+                "type": "string",
+                "enum": ["spoken-narration", "music-only", "music-with-lyrics", "silent", "mixed"],
+                "description": "What the viewer hears",
+                "example": "spoken-narration",
+            },
+            "detectedLanguage": {
+                "type": "string",
+                "description": "ISO 639-1 code of the primary spoken language",
+                "example": "en",
+            },
+            "detectedLanguageName": {
+                "type": "string",
+                "description": "Human-readable name of the primary spoken language",
+                "example": "English",
+            },
+            "languagesUsed": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Deduplicated list of ISO 639-1 codes across all segments",
+                "example": ["en", "ko"],
+            },
+            "languagesUsedNames": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Deduplicated list of language names matching languagesUsed order",
+                "example": ["English", "Korean"],
+            },
+            "isTranslated": {
+                "type": "boolean",
+                "description": "True if any segment needed translation to English",
+                "example": False,
+            },
+        },
+        "required": [
+            "text", "diarizedTranscript", "audioMode",
+            "detectedLanguage", "detectedLanguageName",
+            "languagesUsed", "languagesUsedNames", "isTranslated",
+        ],
+    }
+
+    # Add example responses for key endpoints
+    paths = schema.get("paths", {})
+
+    transcribe_path = paths.get("/api/v1/transcribe", {})
+    for method in transcribe_path.values():
+        responses = method.get("responses", {})
+        if "200" in responses:
+            responses["200"]["content"]["application/json"]["example"] = {
+                "job_id": "a1b2c3d4e5f6",
+                "status": "queued",
+                "poll_url": "/api/v1/jobs/a1b2c3d4e5f6",
+            }
+
+    jobs_path = paths.get("/api/v1/jobs/{job_id}", {})
+    for method in jobs_path.values():
+        responses = method.get("responses", {})
+        if "200" in responses:
+            responses["200"]["content"]["application/json"]["example"] = {
+                "job_id": "a1b2c3d4e5f6",
+                "status": "completed",
+                "created_at": 1700000000.0,
+                "completed_at": 1700000045.0,
+                "result": {
+                    "text": "Hello everyone! Today we're learning Korean.",
+                    "diarizedTranscript": [
+                        {
+                            "speaker": "creator",
+                            "text": "Hello everyone! Today we're learning Korean.",
+                            "originalText": "Hello everyone! Today we're learning Korean.",
+                            "language": "en",
+                            "languageName": "English",
+                        },
+                    ],
+                    "audioMode": "spoken-narration",
+                    "detectedLanguage": "en",
+                    "detectedLanguageName": "English",
+                    "languagesUsed": ["en"],
+                    "languagesUsedNames": ["English"],
+                    "isTranslated": False,
+                },
+                "error": None,
+            }
+
+    # Tag descriptions
+    tags = [
+        {"name": "System", "description": "Health check and service info"},
+        {"name": "API Keys", "description": "Create and manage API keys for authentication"},
+        {"name": "Transcription", "description": "Submit video/audio for transcription and retrieve results"},
+        {"name": "Billing", "description": "Usage tracking, quota management, and pricing information"},
+        {"name": "Agent Discovery", "description": "Endpoints for AI agent discoverability (llms.txt, OpenAPI, MCP, plugin manifests)"},
+    ]
+    schema["tags"] = tags
+
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _custom_openapi
