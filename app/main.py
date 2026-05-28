@@ -52,10 +52,6 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
-    servers=[
-        {"url": "https://api.keyframe.ink", "description": "Production"},
-        {"url": "http://localhost:8000", "description": "Local development"},
-    ],
 )
 
 app.add_middleware(
@@ -730,8 +726,11 @@ python cli.py health
          summary="AI plugin manifest",
          description="Plugin manifest following the OpenAI plugin standard for agent discoverability.")
 def ai_plugin_manifest(request: Request):
-    host = request.headers.get("host", "api.keyframe.ink")
-    scheme = request.url.scheme if request.url.scheme != "" else "https"
+    host = request.headers.get("host", "localhost:8000")
+    # Render terminates TLS at the load balancer — the incoming request
+    # is HTTP but the public URL is HTTPS.
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    scheme = "https" if forwarded_proto == "https" or (host and not host.startswith("localhost")) else "http"
     return {
         "schema_version": "v1",
         "name_for_human": "KeyFrame Transcription",
@@ -823,8 +822,19 @@ def _custom_openapi():
         version=app.version,
         description=app.description,
         routes=app.routes,
-        servers=app.servers,
     )
+
+    # Dynamically set server URL — uses RENDER_EXTERNAL_HOSTNAME in production,
+    # falls back to localhost for dev. No hardcoded domains.
+    render_host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
+    if render_host:
+        schema["servers"] = [
+            {"url": f"https://{render_host}", "description": "Production"},
+        ]
+    else:
+        schema["servers"] = [
+            {"url": "http://localhost:8000", "description": "Local development"},
+        ]
 
     # Add TranscriptionResult and DiarizedSegment schemas so agents
     # can understand the job result structure
