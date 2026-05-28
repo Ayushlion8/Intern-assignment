@@ -15,7 +15,8 @@ import tempfile
 import threading
 import time
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Request
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Request, Depends, Security
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -65,6 +66,33 @@ app.add_middleware(
 # Middleware: API key auth + rate limiting
 # ---------------------------------------------------------------------------
 
+# OpenAPI security scheme — gives Swagger the "Authorize" button
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def _require_api_key(
+    request: Request,
+    raw_key: str | None = Security(api_key_header),
+) -> tuple[str, str]:
+    """Validate API key from header. Returns (key_id, tier) or raises.
+
+    Used as a FastAPI dependency so Swagger knows about auth.
+    """
+    if not raw_key:
+        raise HTTPException(status_code=401, detail=auth_missing().model_dump())
+
+    info = validate_key(raw_key)
+    if info is None:
+        raise HTTPException(status_code=401, detail=auth_invalid().model_dump())
+
+    key_id = info.key_hash[:8]
+    return key_id, info.tier
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
 _rate_buckets: dict[str, dict] = {}
 _global_rate_bucket: dict = {"timestamps": []}
 _GLOBAL_RPM = int(os.getenv("GLOBAL_RPM", "120"))
@@ -76,13 +104,11 @@ def _check_rate_limit(key_id: str, tier: str) -> int | None:
     rpm = TIERS.get(tier, TIERS["free"])["rate_limit_rpm"]
     now = time.time()
     with _rate_lock:
-        # Check global limit first
         _global_rate_bucket["timestamps"] = [t for t in _global_rate_bucket["timestamps"] if now - t < 60]
         if len(_global_rate_bucket["timestamps"]) >= _GLOBAL_RPM:
             oldest = _global_rate_bucket["timestamps"][0]
             return int(60 - (now - oldest)) + 1
 
-        # Check per-key limit
         bucket = _rate_buckets.setdefault(key_id, {"timestamps": []})
         bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
         if len(bucket["timestamps"]) >= rpm:
@@ -90,24 +116,9 @@ def _check_rate_limit(key_id: str, tier: str) -> int | None:
             retry_after = int(60 - (now - oldest)) + 1
             return max(1, retry_after)
 
-        # Consume both
         bucket["timestamps"].append(now)
         _global_rate_bucket["timestamps"].append(now)
     return None
-
-
-def _get_api_key(request: Request) -> tuple[str, str]:
-    """Extract and validate API key. Returns (key_id, tier) or raises."""
-    raw_key = request.headers.get("X-API-Key", "")
-    if not raw_key:
-        raise HTTPException(status_code=401, detail=auth_missing().model_dump())
-
-    info = validate_key(raw_key)
-    if info is None:
-        raise HTTPException(status_code=401, detail=auth_invalid().model_dump())
-
-    key_id = info.key_hash[:8]
-    return key_id, info.tier
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +245,8 @@ def list_api_keys():
               429: {"model": ErrorResponse},
               400: {"model": ErrorResponse},
           })
-def transcribe_url(body: TranscribeRequest, request: Request):
-    key_id, tier = _get_api_key(request)
+def transcribe_url(body: TranscribeRequest, auth: tuple[str, str] = Depends(_require_api_key)):
+    key_id, tier = auth
 
     retry_after = _check_rate_limit(key_id, tier)
     if retry_after:
@@ -275,9 +286,9 @@ def transcribe_url(body: TranscribeRequest, request: Request):
 async def transcribe_upload(
     file: UploadFile = File(..., description="Video or audio file (max 100 MB)"),
     model: str | None = Query(None, description="Force a specific Gemini model"),
-    request: Request = None,
+    auth: tuple[str, str] = Depends(_require_api_key),
 ):
-    key_id, tier = _get_api_key(request)
+    key_id, tier = auth
 
     retry_after = _check_rate_limit(key_id, tier)
     if retry_after:
@@ -343,8 +354,7 @@ async def transcribe_upload(
          responses={
               404: {"model": ErrorResponse},
          })
-def get_job(job_id: str, request: Request):
-    _get_api_key(request)  # auth check
+def get_job(job_id: str, auth: tuple[str, str] = Depends(_require_api_key)):
     job = job_manager.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=job_not_found(job_id).model_dump())
@@ -366,13 +376,8 @@ def get_job(job_id: str, request: Request):
 @app.get(f"{API_V1}/usage", response_model=UsageResponse, tags=["Billing"],
          summary="Get usage and quota",
          description="Query your current billing period usage, remaining quota, and estimated cost.")
-def get_usage_endpoint(request: Request):
-    raw_key = request.headers.get("X-API-Key", "")
-    info = validate_key(raw_key)
-    if info is None:
-        raise HTTPException(status_code=401, detail=auth_invalid().model_dump())
-
-    key_id = info.key_hash[:8]
+def get_usage_endpoint(auth: tuple[str, str] = Depends(_require_api_key)):
+    key_id = auth[0]
     usage = get_usage(key_id)
     if usage is None:
         raise HTTPException(status_code=404, detail=job_not_found(key_id).model_dump())
