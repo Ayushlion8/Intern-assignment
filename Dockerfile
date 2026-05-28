@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir torch && \
 # Copy application code
 COPY app/ app/
 COPY transcribe.py schemas.py config.py rate_limiter.py mcp_server.py sdk.py cli.py run.py ./
-COPY static/ static/
 
 # Create cache directory
 RUN mkdir -p cache/transcripts
