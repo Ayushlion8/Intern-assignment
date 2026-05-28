@@ -16,6 +16,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
+# GCP credentials: support inline JSON via GOOGLE_APPLICATION_CREDENTIALS_JSON
+# ---------------------------------------------------------------------------
+
+_inline_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON", "")
+if _inline_creds and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    import tempfile as _tempfile
+    _creds_tmp = _tempfile.NamedTemporaryFile(
+        suffix=".json", mode="w", delete=False, prefix="gcp_creds_"
+    )
+    _creds_tmp.write(_inline_creds)
+    _creds_tmp.close()
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _creds_tmp.name
+
+# ---------------------------------------------------------------------------
 # Data / cache directories
 # ---------------------------------------------------------------------------
 

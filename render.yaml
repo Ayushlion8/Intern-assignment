@@ -1,14 +1,14 @@
 services:
   - type: web
     name: keyframe-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     envVars:
       - key: GCP_PROJECT_ID
         sync: false
-      - key: GOOGLE_APPLICATION_CREDENTIALS
+      - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
         sync: false
-      - key: PYTHON_VERSION
-        value: "3.11"
+        description: "Paste the entire GCP service account JSON here for cloud deployment"
+      - key: GLOBAL_RPM
+        value: "120"
     plan: starter

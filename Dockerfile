@@ -7,16 +7,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install Python dependencies
+# Install Python dependencies in layers for faster rebuilds
+# Heavy packages first (PyTorch ~2GB) — this layer caches
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir torch && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy application
-COPY . .
+# Copy application code
+COPY app/ app/
+COPY transcribe.py schemas.py config.py rate_limiter.py mcp_server.py sdk.py cli.py run.py ./
+COPY static/ static/
 
 # Create cache directory
 RUN mkdir -p cache/transcripts
 
-EXPOSE 8000
+# Render assigns PORT dynamically; default to 8000 for local dev
+ENV PORT=8000
+EXPOSE $PORT
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run with uvicorn using the PORT env var
+CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT
