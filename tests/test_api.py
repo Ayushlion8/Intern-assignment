@@ -230,5 +230,43 @@ class TestPricing:
         assert TIERS["enterprise"]["monthly_quota"] == -1
 
 
+class TestSDK:
+    def test_sdk_import(self):
+        from sdk import KeyFrameClient, KeyFrameError
+        assert KeyFrameClient is not None
+        assert KeyFrameError is not None
+
+    def test_sdk_error_format(self):
+        from sdk import KeyFrameError
+        err = KeyFrameError(code="TEST", message="test error", action="retry")
+        assert "[TEST]" in str(err)
+        assert err.code == "TEST"
+        assert err.action == "retry"
+
+
+class TestCLI:
+    def test_cli_import(self):
+        import cli
+        assert hasattr(cli, "main")
+
+    def test_cli_keys_create(self):
+        from app.auth import create_key
+        result = create_key(name="cli-test", tier="free")
+        assert result.key.startswith("kf_")
+        assert result.tier == "free"
+
+
+class TestLlmsFullTxt:
+    def test_llms_full_txt_is_richer(self, client):
+        resp = client.get("/llms-full.txt")
+        assert resp.status_code == 200
+        text = resp.text
+        # Should have much more detail than llms.txt
+        assert "DiarizedSegment" in text
+        assert "POST /api/v1/keys" in text
+        assert "sdk.py" in text or "SDK" in text
+        assert "cli.py" in text or "CLI" in text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

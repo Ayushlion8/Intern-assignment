@@ -70,22 +70,33 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 _rate_buckets: dict[str, dict] = {}
+_global_rate_bucket: dict = {"timestamps": []}
+_GLOBAL_RPM = int(os.getenv("GLOBAL_RPM", "120"))
 _rate_lock = threading.Lock()
 
 
 def _check_rate_limit(key_id: str, tier: str) -> int | None:
-    """Per-key sliding-window rate limit. Returns retry_after seconds or None."""
+    """Per-key + global sliding-window rate limit. Returns retry_after seconds or None."""
     rpm = TIERS.get(tier, TIERS["free"])["rate_limit_rpm"]
     now = time.time()
     with _rate_lock:
+        # Check global limit first
+        _global_rate_bucket["timestamps"] = [t for t in _global_rate_bucket["timestamps"] if now - t < 60]
+        if len(_global_rate_bucket["timestamps"]) >= _GLOBAL_RPM:
+            oldest = _global_rate_bucket["timestamps"][0]
+            return int(60 - (now - oldest)) + 1
+
+        # Check per-key limit
         bucket = _rate_buckets.setdefault(key_id, {"timestamps": []})
-        # Prune old timestamps
         bucket["timestamps"] = [t for t in bucket["timestamps"] if now - t < 60]
         if len(bucket["timestamps"]) >= rpm:
             oldest = bucket["timestamps"][0]
             retry_after = int(60 - (now - oldest)) + 1
             return max(1, retry_after)
+
+        # Consume both
         bucket["timestamps"].append(now)
+        _global_rate_bucket["timestamps"].append(now)
     return None
 
 
@@ -450,8 +461,264 @@ An MCP server is available for integration with AI tools. See the /mcp endpoint 
          summary="llms-full.txt — Full API documentation for agents",
          description="Complete API documentation in plain text for agent consumption.")
 def llms_full_txt():
-    # Return the same content but could be more detailed
-    return llms_txt()
+    return """# KeyFrame Transcription API — Full Documentation
+
+> Agent-first video/audio transcription service producing structured, speaker-diarized transcripts with language detection and English translation.
+
+## Overview
+
+KeyFrame provides a REST API for transcribing short-form video and audio content (up to ~5 minutes). The pipeline uses:
+- **Whisper tiny** (local, ~10ms) for language detection
+- **Chirp 3** (Google Cloud Speech v2) for speaker diarization
+- **Gemini 2.5 Flash** (Vertex AI) for structured transcription, with **Gemini 2.5 Pro** fallback when diarization output is sparse
+
+Processing takes 10–60 seconds per video. The API uses an async polling pattern: submit, get a job_id, poll until done.
+
+## Authentication
+
+All transcription and billing endpoints require an API key in the `X-API-Key` header.
+
+Create a key: `POST /api/v1/keys` with body `{"name": "my-agent", "tier": "free"}`
+
+The full key (starts with `kf_`) is returned only once at creation. Store it securely.
+
+## Endpoints
+
+### POST /api/v1/keys
+Create an API key.
+
+Request body:
+```json
+{"name": "my-agent", "tier": "free"}
+```
+
+Response:
+```json
+{
+  "key": "kf_a1b2c3...full_key_here",
+  "key_id": "a1b2c3d4",
+  "name": "my-agent",
+  "tier": "free",
+  "monthly_quota": 5,
+  "rate_limit_rpm": 5
+}
+```
+
+### POST /api/v1/transcribe
+Submit a media URL for transcription.
+
+Request:
+```json
+{"url": "https://example.com/video.mp4", "model": null}
+```
+
+- `url` (required): Public URL to a video or audio file
+- `model` (optional): Force a Gemini model, e.g. "gemini-2.5-pro" — skips diarization pipeline
+
+Response:
+```json
+{
+  "job_id": "a1b2c3d4e5f6",
+  "status": "queued",
+  "poll_url": "/api/v1/jobs/a1b2c3d4e5f6"
+}
+```
+
+### POST /api/v1/transcribe/upload
+Upload a media file for transcription (max 100 MB).
+
+Multipart form: `file` (required) + `model` (optional query param)
+
+Supported formats: mp4, mp3, wav, ogg, webm, m4a
+
+Response: Same as POST /api/v1/transcribe
+
+### GET /api/v1/jobs/{job_id}
+Poll job status and retrieve results.
+
+Response when processing:
+```json
+{"job_id": "a1b2c3d4e5f6", "status": "processing", "created_at": 1700000000, "completed_at": null, "result": null, "error": null}
+```
+
+Response when completed:
+```json
+{
+  "job_id": "a1b2c3d4e5f6",
+  "status": "completed",
+  "created_at": 1700000000,
+  "completed_at": 1700000045,
+  "result": {
+    "text": "Full English transcript here...",
+    "diarizedTranscript": [
+      {"speaker": "creator", "text": "English translation", "originalText": "Original text", "language": "ko", "languageName": "Korean"},
+      {"speaker": "ai", "text": "Hello in English", "originalText": "안녕하세요", "language": "ko", "languageName": "Korean"}
+    ],
+    "audioMode": "spoken-narration",
+    "detectedLanguage": "ko",
+    "detectedLanguageName": "Korean",
+    "languagesUsed": ["ko", "en"],
+    "languagesUsedNames": ["Korean", "English"],
+    "isTranslated": true
+  },
+  "error": null
+}
+```
+
+Response when failed:
+```json
+{
+  "job_id": "a1b2c3d4e5f6",
+  "status": "failed",
+  "created_at": 1700000000,
+  "completed_at": 1700000010,
+  "result": null,
+  "error": {"code": "UPSTREAM_TIMEOUT", "message": "Gemini timed out", "action": "wait_and_retry"}
+}
+```
+
+### GET /api/v1/usage
+Get usage stats and remaining quota.
+
+Response:
+```json
+{
+  "key_id": "a1b2c3d4",
+  "tier": "free",
+  "usage_month": "2026-05",
+  "usage_count": 3,
+  "monthly_quota": 5,
+  "remaining": 2,
+  "cost_usd": 0.0
+}
+```
+
+### GET /health
+Service health check (no auth required).
+
+Response: `{"status": "ok", "version": "1.0.0", "uptime_s": 1234.5}`
+
+## Output Schema: TranscriptionResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| text | string | Full English transcript concatenated from all segments |
+| diarizedTranscript | DiarizedSegment[] | Speaker-labeled segments |
+| audioMode | enum | spoken-narration, music-only, music-with-lyrics, silent, mixed |
+| detectedLanguage | string | ISO 639-1 code of primary spoken language |
+| detectedLanguageName | string | Human-readable language name |
+| languagesUsed | string[] | All ISO codes across segments |
+| languagesUsedNames | string[] | Matching human-readable names |
+| isTranslated | boolean | True if any segment needed translation |
+
+### DiarizedSegment
+
+| Field | Type | Description |
+|-------|------|-------------|
+| speaker | string | creator, ai, narrator, on-screen-ocr, person1..N, other |
+| text | string | English translation |
+| originalText | string | Untranslated transcript in original language |
+| language | string | ISO 639-1 code |
+| languageName | string | Human-readable name |
+
+Speaker labels:
+- **creator**: Primary on-camera human (natural speech with breathing, emotion)
+- **ai**: Synthetic/TTS/chatbot voice (unnaturally smooth)
+- **narrator**: Off-camera human voiceover
+- **on-screen-ocr**: Text visible on screen (captions, overlays)
+- **person1..personN**: Additional on-camera people
+- **other**: Unattributable voice
+
+## Pricing
+
+| Tier | Monthly quota | Price/video | Rate limit |
+|------|--------------|-------------|------------|
+| free | 5 | $0.00 | 5 RPM |
+| starter | 100 | $0.10 | 30 RPM |
+| pro | 1,000 | $0.08 | 60 RPM |
+| enterprise | Unlimited | $0.06 | 120 RPM |
+
+Pipeline cost: ~$0.02-0.08/video. Pricing set at 25-400% margin over cost.
+
+Competitor comparison:
+- Deepgram: $0.0125/min (no diarization included)
+- AssemblyAI: $0.00013/s + diarization add-on
+- Google STT: $0.016/min standard, $0.024/min enhanced
+- KeyFrame includes diarization + translation + structured output at base price
+
+## Rate Limits
+
+Two levels:
+1. **Per-key**: Sliding window based on tier RPM (5-120 RPM)
+2. **Global**: 120 RPM total across all keys (configurable via GLOBAL_RPM env var)
+
+When rate limited, returns 429 with:
+```json
+{"detail": {"error": {"code": "RATE_LIMITED", "message": "Rate limit exceeded; retry after 15s", "action": "wait_and_retry", "doc_url": "https://docs.keyframe.ink/errors#RATE_LIMITED"}}}
+```
+
+## Error Handling
+
+All errors return a structured ErrorResponse:
+```json
+{
+  "error": {
+    "code": "FILE_TOO_LARGE",
+    "message": "Uploaded file is 150.0 MB, exceeds 100 MB limit",
+    "action": "reduce_file_size",
+    "doc_url": "https://docs.keyframe.ink/errors#FILE_TOO_LARGE"
+  },
+  "request_id": null
+}
+```
+
+Error codes:
+- AUTH_MISSING, AUTH_INVALID — check_auth
+- RATE_LIMITED, QUOTA_EXCEEDED — wait_and_retry / upgrade_plan
+- FILE_TOO_LARGE — reduce_file_size
+- UPSTREAM_TIMEOUT, UPSTREAM_ERROR, UPSTREAM_RATE_LIMITED — wait_and_retry / retry
+- JOB_NOT_FOUND — check_auth
+- INVALID_INPUT, UNSUPPORTED_MEDIA_TYPE — retry
+- INTERNAL_ERROR — contact_support
+
+## MCP Server
+
+An MCP server (Model Context Protocol) is available for AI agent tool integration.
+
+Tools: transcribe, get_job, create_api_key, check_usage, health_check
+
+Run: `KEYFRAME_API_KEY=kf_... KEYFRAME_API_URL=http://localhost:8000 python mcp_server.py`
+
+## SDK
+
+A Python SDK client is included (sdk.py):
+```python
+from sdk import KeyFrameClient
+
+client = KeyFrameClient(api_key="kf_...")
+job = client.transcribe("https://example.com/video.mp4")
+result = client.wait_for_result(job["job_id"])
+print(result["text"])
+```
+
+## CLI
+
+A CLI tool is included (cli.py):
+```bash
+python cli.py keys create --name my-agent --tier free
+python cli.py transcribe https://example.com/video.mp4 --api-key kf_...
+python cli.py jobs JOB_ID --api-key kf_...
+python cli.py health
+```
+
+## Workflow Summary
+
+1. Create API key: POST /api/v1/keys
+2. Submit media: POST /api/v1/transcribe with X-API-Key header
+3. Poll: GET /api/v1/jobs/{job_id} every 3-5 seconds
+4. Use result.diarizedTranscript for speaker-labeled segments
+5. Check usage: GET /api/v1/usage
+"""
 
 
 @app.get("/.well-known/ai-plugin.json", tags=["Agent Discovery"],

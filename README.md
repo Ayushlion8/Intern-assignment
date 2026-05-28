@@ -215,6 +215,46 @@ python mcp_server.py
 
 Tools exposed: `transcribe`, `get_job`, `create_api_key`, `check_usage`, `health_check`
 
+## Python SDK
+
+```python
+from sdk import KeyFrameClient
+
+client = KeyFrameClient(api_key="kf_YOUR_KEY", base_url="http://localhost:8000")
+
+# Submit transcription
+job = client.transcribe("https://example.com/video.mp4")
+
+# Wait for result (polls automatically)
+result = client.wait_for_result(job["job_id"])
+print(result["text"])
+
+# Upload a file
+job = client.transcribe_file("video.mp4")
+
+# Check usage
+print(client.usage())
+```
+
+Or from CLI:
+```bash
+python sdk.py --api-key kf_YOUR_KEY transcribe https://example.com/video.mp4
+python sdk.py --api-key kf_YOUR_KEY result JOB_ID
+python sdk.py --api-key kf_YOUR_KEY usage
+```
+
+## CLI Tool
+
+```bash
+python cli.py keys create --name my-agent --tier free
+python cli.py keys list
+python cli.py keys revoke KEY_ID
+python cli.py keys usage KEY_ID
+python cli.py health
+python cli.py transcribe https://example.com/video.mp4 --api-key kf_YOUR_KEY
+python cli.py jobs JOB_ID --api-key kf_YOUR_KEY
+```
+
 ## Project Structure
 
 ```
@@ -226,13 +266,16 @@ Tools exposed: `transcribe`, `get_job`, `create_api_key`, `check_usage`, `health
 │   └── errors.py         # Agent-optimized error responses
 ├── tests/
 │   ├── __init__.py
-│   └── test_api.py       # API integration tests
+│   └── test_api.py       # API integration tests (29 tests)
 ├── transcribe.py         # Core transcription pipeline + CLI
 ├── schemas.py            # Pydantic models + Gemini prompt
 ├── config.py             # API client factories, usage tracker, retry logic
 ├── rate_limiter.py       # Token-bucket rate limiter (upstream)
 ├── mcp_server.py         # MCP server for AI agent integration
+├── sdk.py                # Python SDK client (auto-generated style)
+├── cli.py                # CLI tool for key management + transcription
 ├── Dockerfile            # Container build
+├── render.yaml           # Render deployment config
 ├── .env.example          # Environment variable template
 ├── .gitignore
 ├── requirements.txt

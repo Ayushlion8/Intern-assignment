@@ -40,11 +40,15 @@ Polling wins because every HTTP client supports it and it requires zero infrastr
 
 **Rationale**: Simple, explicit, and widely supported. Bearer tokens imply OAuth2 complexity we don't need. Query params leak keys into logs and URLs. `X-API-Key` is clear and agent-friendly.
 
-## Rate Limiting: Sliding Window Per-Key
+## Rate Limiting: Two-Tier Sliding Window
 
-**Decision**: In-memory sliding window counter per API key.
+**Decision**: Per-key sliding window + global sliding window.
 
-**Rationale**: The existing `rate_limiter.py` is a token bucket for upstream service calls (Gemini, Chirp 3). For the API-facing rate limiter, a sliding window is simpler to reason about and provides more predictable behavior. Per-key limits prevent a single user from consuming all capacity.
+**Rationale**: The existing `rate_limiter.py` is a token bucket for upstream service calls (Gemini, Chirp 3). For the API-facing rate limiter, a sliding window is simpler to reason about and provides more predictable behavior. Two levels:
+1. **Per-key**: Each API key has an RPM limit based on its tier (5–120 RPM).
+2. **Global**: A configurable total RPM cap across all keys (default 120 RPM, set via `GLOBAL_RPM` env var). Protects against aggregate load overwhelming upstream services (Gemini ~15k RPM, Chirp 3 project quotas).
+
+Per-key limits prevent a single user from consuming all capacity. The global limit protects upstream services regardless of how many API keys exist.
 
 ## Pricing Model
 
@@ -92,7 +96,19 @@ An agent reading *any* one of these should be able to understand and use the API
 
 **Decision**: Designed for Railway/Render deployment with Uvicorn.
 
-**Rationale**: The pipeline needs ffmpeg and ~2GB for PyTorch/Whisper. Railway and Render both support Docker deployments with these requirements. The `Dockerfile` and `railway.json` (or `render.yaml`) make deployment a single command.
+**Rationale**: The pipeline needs ffmpeg and ~2GB for PyTorch/Whisper. Railway and Render both support Docker deployments with these requirements. The `Dockerfile` and `render.yaml` make deployment a single command.
+
+## SDK: Hand-Written Python Client
+
+**Decision**: Hand-written SDK (`sdk.py`) rather than auto-generated from OpenAPI.
+
+**Rationale**: Auto-generated clients from OpenAPI (via openapi-generator or datamodel-code-generator) add build complexity and produce verbose code. For the assessment, a clean hand-written client that covers all endpoints is more readable and interviewer-friendly. The SDK includes `wait_for_result()` which auto-polls — a convenience that auto-generated clients don't provide. If the API grows significantly, auto-generation becomes worthwhile.
+
+## CLI: Lightweight argparse Tool
+
+**Decision**: CLI tool (`cli.py`) using argparse, directly calling the auth module and API.
+
+**Rationale**: The task asks for "a basic web form or CLI tool" for key management. A CLI is more agent-friendly than a web form (agents can invoke CLI commands directly). Using argparse keeps it zero-dependency. The CLI also supports transcription and job polling, making it a full client for quick testing.
 
 ## Assumptions
 
