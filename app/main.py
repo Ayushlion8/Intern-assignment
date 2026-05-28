@@ -17,7 +17,7 @@ import time
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.auth import (
@@ -175,8 +175,13 @@ _start_time = time.time()
 
 
 # ---------------------------------------------------------------------------
-# Routes — Health
+# Routes — Root redirect + Health
 # ---------------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/docs")
+
 
 @app.get("/health", response_model=HealthResponse, tags=["System"],
          summary="Health check",
