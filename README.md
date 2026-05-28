@@ -82,6 +82,18 @@ cp .env.example .env
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
+### Run the Frontend Dashboard
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Opens at http://localhost:5173 (proxies API to :8000)
+```
+
+The frontend provides a transcription playground, API key management, usage tracking,
+and developer experience panels — all with a dark glassmorphism theme.
+
 ### Create an API Key
 
 ```bash
@@ -264,6 +276,16 @@ python cli.py jobs JOB_ID --api-key kf_YOUR_KEY
 │   ├── auth.py           # API key management, pricing tiers
 │   ├── jobs.py           # Background job manager
 │   └── errors.py         # Agent-optimized error responses
+├── frontend/
+│   ├── src/
+│   │   ├── api/          # API client layer
+│   │   ├── components/   # React UI components
+│   │   ├── hooks/        # usePollJob and other hooks
+│   │   ├── lib/          # Utilities
+│   │   ├── App.jsx       # Main dashboard layout
+│   │   └── main.jsx      # Entry point
+│   ├── vite.config.js    # Vite + Tailwind + proxy config
+│   └── package.json
 ├── tests/
 │   ├── __init__.py
 │   └── test_api.py       # API integration tests (29 tests)
@@ -272,9 +294,10 @@ python cli.py jobs JOB_ID --api-key kf_YOUR_KEY
 ├── config.py             # API client factories, usage tracker, retry logic
 ├── rate_limiter.py       # Token-bucket rate limiter (upstream)
 ├── mcp_server.py         # MCP server for AI agent integration
-├── sdk.py                # Python SDK client (auto-generated style)
+├── sdk.py                # Python SDK client
 ├── cli.py                # CLI tool for key management + transcription
 ├── Dockerfile            # Container build
+├── .dockerignore
 ├── render.yaml           # Render deployment config
 ├── .env.example          # Environment variable template
 ├── .gitignore
